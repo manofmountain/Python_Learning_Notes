@@ -1,0 +1,107 @@
+如何在Python中使用线程
+
+受益于在此的讨论：http://stackoverflow.com/questions/2846653/how-to-use-threading-in-python
+另外一篇了解Python内线程机制的交好blog: https://jeffknupp.com/blog/2012/03/31/pythons-hardest-problem/
+
+1、使用 threading module：
+适用范围：
+适用于建立那些与I/O操作相关的操作线程。
+因为CPython并不真正在多个core上并发执行多个CPU密集型（CPU-bound）的线程。使用threading.Thread class来建立的线程在真正执行时，受限于Python 解释器的全局锁，只能串行地在CPU上进行执行即使我们的CPU上有多个core充分支持多线程并发执行。但是对于某些包含有重I/O操作的进程中，我们可以使用threading来建立线程，然后由它来单独等待i/o操作（网络数据或disk数据）完成，此时将cpu资源释放出来交由主程序线程继续执行，因此整体起到了让主程序线程不被i/o阻塞的作用。
+应用实例：
+实例一：
+import Queue
+import threading
+import urllib2
+# 每个新建线程所调用的执行函数
+def get_url(q, url):
+    q.put(urllib2.urlopen(url).read())
+theurls = ["http://google.com", "http://yahoo.com"]
+q = Queue.Queue() #Queue在内部实现的时候就是线程安全的，所以在使用它的时候不需考虑锁、条件变量、事件及信息量等多线程间执行协调因子
+for u in theurls:
+    t = threading.Thread(target=get_url, args = (q,u))
+	# 将每个新建的线程设为daemon模式，这样当主线程结束后，新建的子线程可继续执行
+    t.daemon = True #
+    t.start()
+s = q.get()
+print s
+
+2、真正的并发执行-使用multiprocessing：
+适用范围：
+适用于需要fork出多个进程，然后执行真正的多core CPU之上并发执行的程序。
+multiprocessing module可以fork出多个真正并发执行的进程。由于全局解释器锁的原因，使用threading模块只能交替执行其建立的多个线程，而这只有在有i/o操作阻塞需要绕过的时候才能发挥较好的作用。。
+应用实例：
+实例一：
+from multiprocessing import Process
+
+def f(name):
+    print 'hello', name
+
+if __name__ == '__main__':
+    p = Process(target=f, args=('bob',))
+    p.start()
+    p.join()
+	
+这个小程序创建了一个进程，让它运行起来。主程序在将它启动起来后，又使用join方法等待它执行结束退出，然后回收它。此后主进程才会退出，程序执行完成。如果我们不在程序的最后使用join来等待子进程执行结束，那么主进程退出后，子进程有可能尚未退出，这会导致它成为一个僵尸进程，资源无法得到有效回收。
+
+
+3、使用multiprocessing.dummy中的Pool
+通过使用map与Pool来生成多个具有相同目标函数的并发线程。其中map是函数式编程的一个常用函数，另一个是reduce。
+实例一：
+from multiprocessing.dummy import Pool as ThreadPool 
+pool = ThreadPool(4) 
+results = pool.map(my_function, my_array)
+它是由如下单线程程序改进而得的多线程程序。
+
+results = []
+for item in my_array:
+    results.append(my_function(item))
+
+实例二：
+import urllib2 
+from multiprocessing.dummy import Pool as ThreadPool 
+
+urls = [
+  'http://www.python.org', 
+  'http://www.python.org/about/',
+  'http://www.onlamp.com/pub/a/python/2003/04/17/metaclasses.html',
+  'http://www.python.org/doc/',
+  'http://www.python.org/download/',
+  'http://www.python.org/getit/',
+  'http://www.python.org/community/',
+  'https://wiki.python.org/moin/',
+  ]
+
+# 在各个线程内部调用同一个目标运行函数'urllib2.urlopen'，但是传入不同的参数，进而在这些线程中返回不同的值
+with Pool(4) as pool:
+    results = pool.map(urllib2.urlopen, urls)
+#当然也可使用多个数组作为参数，如下所示
+results = pool.starmap(function, zip(list_a, list_b))
+#或者也可以向下面这样使用一个常量与数组作为参数，如下所示
+results = pool.starmap(function, zip(itertools.repeat(constant), list_a))
+
+4、结合threading, multiprocessing, subprocess进行的多进程并发
+利用threading来建立多个交叉执行的线程，然后在每个线程中执行由subprocess直接启动的可在shell下执行的进程。
+import Queue
+import threading
+import multiprocessing
+import subprocess
+
+q = Queue.Queue()
+for i in range(30): #将我们要执行的30个任务放入队列当中
+    q.put(i)
+
+def worker():
+    while True:
+        item = q.get()
+		#执行一个任务，调用shell程序，在下面执行我们的task，然后等待它结束返回
+        subprocess.call("echo "+str(item), shell=True) 
+        q.task_done()
+
+cpus=multiprocessing.cpu_count() #获得我们系统中所具有的可执行cpu核的数目
+print("Creating %d threads" % cpus)
+for i in range(cpus):
+     t = threading.Thread(target=worker)
+     t.daemon = True
+     t.start()
+
+q.join() #队列阻塞直到所有task被执行完毕
